@@ -1,6 +1,5 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Agenda de Ações DQVS</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Figtree:wght@400;500;600;700&display=swap">
 <style>
 /* Layout: tela de senha; cabeçalho; abas (Ações por fase | Calendário | Arquivo | Contatos); filtros; quadro por fase; calendário Dia/Mês/Ano com temas do mês; ficha da ação com 4 fases editáveis ao mesmo tempo; relatório para impressão */
@@ -580,6 +579,23 @@ button.resp[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset
 
 <div class="toast" id="toast" role="status" hidden></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+/* =====================================================================
+   COLE AQUI A CONFIGURAÇÃO DO SEU FIREBASE
+   Firebase Console > Configurações do projeto (engrenagem) > Geral >
+   "Seus aplicativos" > app Web > "Configuração do SDK" (objeto firebaseConfig)
+   ===================================================================== */
+window.FIREBASE_CONFIG = {
+  apiKey: "COLE_AQUI",
+  authDomain: "COLE_AQUI",
+  projectId: "COLE_AQUI",
+  storageBucket: "COLE_AQUI",
+  messagingSenderId: "COLE_AQUI",
+  appId: "COLE_AQUI"
+};
+</script>
 <script>
 (function () {
   'use strict';
@@ -1800,71 +1816,31 @@ button.resp[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset
   const h0 = location.hash.replace('#', '');
   if (TABS.indexOf(h0) >= 0) tab = h0;
   setGate('carregando');
-  (async function () {
-    try { if (window.claude && window.claude.use) { db = await window.claude.use('db'); user = await window.claude.use('user'); dl = await window.claude.use('downloads'); } } catch (e) { db = db || null; }
-    if (db) {
-      try { if (user && user.can) { const ok = await Promise.resolve(user.can('data.write')); if (ok === false) readOnly = true; } } catch (e) {}
-      try { podeAdmin = user ? await user.canEdit() : false; } catch (e) { podeAdmin = false; }
+  /* Download do relatório (arquivo .html) pelo navegador */
+  dl = {
+    save: async function (o) {
+      const blob = new Blob([o.data], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = o.filename; document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
     }
+  };
+  (async function () {
+    try {
+      const cfg = window.FIREBASE_CONFIG;
+      if (window.firebase && cfg && cfg.projectId && cfg.projectId !== 'COLE_AQUI') {
+        if (!firebase.apps.length) firebase.initializeApp(cfg);
+        db = firebase.firestore();
+        podeAdmin = true;   /* quem sabe a senha da equipe pode definir/trocar a senha */
+        readOnly = false;
+      } else {
+        console.warn('Firebase não configurado: preencha window.FIREBASE_CONFIG no início do arquivo.');
+      }
+    } catch (e) { console.error('Erro ao iniciar o Firebase', e); db = null; }
     carregarAcesso();
   })();
 })();
 </script>
 
-<!-- Bloco de Sincronização da Agenda DQVS com o Firebase Realtime Database -->
-<script type="module">
-  import { initializeApp } from "https://gstatic.com";
-  import { getDatabase, ref, set, onValue } from "https://gstatic.com";
 
-  // Configuração extraída do seu painel do Firebase (baseada na sua imagem)
-  const firebaseConfig = {
-    apiKey: "SUA_API_KEY_AQUI", // Insira a API Key que pegou nas configurações do projeto
-    authDomain: "://firebaseapp.com",
-    databaseURL: "https://agenda-dqvs-default-rtdb.firebaseio.com",
-    projectId: "agenda-dqvs",
-    storageBucket: "://appspot.com",
-    messagingSenderId: "SUA_SENDER_ID",
-    appId: "SUA_APP_ID"
-  };
-
-  // Inicializa o banco de dados em nuvem
-  const app = initializeApp(firebaseConfig);
-  // Conecta o Firebase e ativa o modo sincronizado original do site
-// Ativa diretamente a variável que o site original está esperando
-window.db = getDatabase(app);
-db = window.db; 
-
-// Desativa o modo local e força o cabeçalho a se atualizar
-loading = false; 
-if (typeof renderStatus === 'function') {
-  renderStatus();
-} else if (typeof render === 'function') {
-  render();
-}
-
-  // Monitora alterações na nuvem em tempo real para manter a equipe sincronizada
-  const acoesRef = ref(db, 'acoes/');
-  onValue(acoesRef, (snapshot) => {
-    const dados = snapshot.val();
-    if (dados) {
-      console.log("Dados da agenda atualizados na nuvem:", dados);
-      
-      // Se o seu código original usar uma variável global para listar as ações (ex: 'listaAcoes'),
-      // nós a atualizamos aqui e mandamos a tela atualizar:
-      if (typeof ações !== 'undefined') {
-        ações = dados;
-        if (typeof atualizarTela === 'function') atualizarTela();
-        if (typeof renderizarCalendario === 'function') renderizarCalendario();
-      }
-    }
-  });
-
-  // Interceptador para salvar na nuvem toda vez que uma ação for criada/editada
-  // Esta função deve ser chamada dentro do seu botão "Salvar" original
-  window.sincronizarAcaoComNuvem = function(idAcao, dadosDaAcao) {
-    set(ref(db, 'acoes/' + idAcao), dadosDaAcao)
-      .then(() => console.log("Ação salva com sucesso na nuvem para toda a equipe!"))
-      .catch((error) => console.error("Erro ao salvar na nuvem:", error));
-  };
-</script>
 </body></html>
