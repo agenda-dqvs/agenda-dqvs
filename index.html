@@ -1829,7 +1829,13 @@ button.resp[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset
 
   // Inicializa o banco de dados em nuvem
   const app = initializeApp(firebaseConfig);
-  const db = getDatabase(app);
+  // Conecta o Firebase e ativa o modo sincronizado original do site
+window.db = getDatabase(app);
+if (typeof db === 'undefined') {
+  var db = window.db;
+}
+window.loading = false;
+if (typeof renderStatus === 'function') renderStatus();
 
   // Monitora alterações na nuvem em tempo real para manter a equipe sincronizada
   const acoesRef = ref(db, 'acoes/');
