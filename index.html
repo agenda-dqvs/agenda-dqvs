@@ -1830,12 +1830,17 @@ button.resp[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset
   // Inicializa o banco de dados em nuvem
   const app = initializeApp(firebaseConfig);
   // Conecta o Firebase e ativa o modo sincronizado original do site
+// Ativa diretamente a variável que o site original está esperando
 window.db = getDatabase(app);
-if (typeof db === 'undefined') {
-  var db = window.db;
+db = window.db; 
+
+// Desativa o modo local e força o cabeçalho a se atualizar
+loading = false; 
+if (typeof renderStatus === 'function') {
+  renderStatus();
+} else if (typeof render === 'function') {
+  render();
 }
-window.loading = false;
-if (typeof renderStatus === 'function') renderStatus();
 
   // Monitora alterações na nuvem em tempo real para manter a equipe sincronizada
   const acoesRef = ref(db, 'acoes/');
