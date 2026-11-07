@@ -1,5 +1,126 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html><head>
+<!-- ===== SINCRONIZAÇÃO SUPABASE — o app inteiro grava e lê por aqui ===== -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+(function () {
+  // >>> COLE AQUI os dados do seu projeto (Supabase > Project Settings > API)
+  var SUPABASE_URL = "https://kvpwbnfrmxosovcxbzbe.supabase.co";          // ex.: https://abcdxyz.supabase.co
+  var SUPABASE_ANON_KEY = "sb_publishable_HMtXPpMAXVf8pWwkC40YMg_W19BzC6N"; // chave "anon" / "publishable"
+  var TABELA = "docs";
+  var POLL_MS = 15000; // reforço caso o tempo real falhe
+
+  var sb = null;
+  try {
+    if (/COLE_/.test(SUPABASE_URL + SUPABASE_ANON_KEY)) throw new Error('Supabase ainda não configurado');
+    sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  } catch (e) { console.error('Supabase não iniciou:', e); }
+
+  var listeners = [];                       // {col, id|null, run()}
+  function refresh(col, id) {
+    listeners.forEach(function (l) { if (l.col === col && (l.id === null || id == null || l.id === id)) l.run(); });
+  }
+  function novoId() {
+    var b = new Uint8Array(10); crypto.getRandomValues(b);
+    return Array.prototype.map.call(b, function (x) { return (x % 36).toString(36); }).join('');
+  }
+  function check(r) { if (r.error) throw r.error; return r; }
+  function snapDoc(col, id, row) {
+    return { id: id, exists: !!row, data: function () { return row ? row.data : undefined; }, metadata: { fromCache: false } };
+  }
+
+  function docRef(col, id) {
+    id = id || novoId();
+    var ref = {
+      id: id,
+      get: async function () {
+        var r = check(await sb.from(TABELA).select('data').eq('col', col).eq('id', id).maybeSingle());
+        return snapDoc(col, id, r.data);
+      },
+      set: async function (data) {
+        check(await sb.from(TABELA).upsert({ col: col, id: id, data: JSON.parse(JSON.stringify(data)), updated_at: new Date().toISOString() }));
+        refresh(col, id);
+      },
+      update: async function (patch) {
+        var atual = check(await sb.from(TABELA).select('data').eq('col', col).eq('id', id).maybeSingle()).data;
+        if (!atual) throw new Error('documento não existe');
+        var novo = Object.assign({}, atual.data, JSON.parse(JSON.stringify(patch)));
+        check(await sb.from(TABELA).update({ data: novo, updated_at: new Date().toISOString() }).eq('col', col).eq('id', id));
+        refresh(col, id);
+      },
+      delete: async function () {
+        check(await sb.from(TABELA).delete().eq('col', col).eq('id', id));
+        refresh(col, id);
+      },
+      onSnapshot: function (ok, fail) { return assinar(col, id, ok, fail); }
+    };
+    return ref;
+  }
+
+  function assinar(col, id, ok, fail) {
+    var vivo = true;
+    var l = { col: col, id: id === undefined ? null : id };
+    l.run = async function () {
+      try {
+        if (l.id === null) {
+          var r = check(await sb.from(TABELA).select('id,data').eq('col', col));
+          if (!vivo) return;
+          ok({ docs: r.data.map(function (x) { return { id: x.id, data: function () { return x.data; } }; }), metadata: { fromCache: false } });
+        } else {
+          var d = check(await sb.from(TABELA).select('data').eq('col', col).eq('id', l.id).maybeSingle());
+          if (!vivo) return;
+          ok(snapDoc(col, l.id, d.data));
+        }
+      } catch (e) { if (vivo && fail) fail(e); }
+    };
+    listeners.push(l);
+    l.run();
+    return function () { vivo = false; listeners = listeners.filter(function (x) { return x !== l; }); };
+  }
+
+  // tempo real + reforço periódico
+  if (sb) {
+    try {
+      sb.channel('agenda-docs').on('postgres_changes', { event: '*', schema: 'public', table: TABELA }, function (p) {
+        var row = p.new && p.new.col ? p.new : p.old;
+        if (row && row.col) refresh(row.col, row.id); else listeners.forEach(function (l) { l.run(); });
+      }).subscribe();
+    } catch (e) { console.warn('Tempo real indisponível, usando atualização periódica', e); }
+    setInterval(function () { if (!document.hidden) listeners.forEach(function (l) { l.run(); }); }, POLL_MS);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) listeners.forEach(function (l) { l.run(); }); });
+  }
+
+  // interface que o app espera (mesma forma do Firestore)
+  var db = sb && {
+    collection: function (col) {
+      return {
+        doc: function (id) { return docRef(col, id); },
+        onSnapshot: function (ok, fail) { return assinar(col, undefined, ok, fail); }
+      };
+    },
+    doc: function (path) { var p = path.split('/'); return docRef(p[0], p[1]); }
+  };
+
+  window.claude = {
+    use: async function (nome) {
+      if (nome === 'db') { if (!db) throw new Error('sem supabase'); return db; }
+      if (nome === 'user') return { can: function () { return true; }, canEdit: async function () { return true; } };
+      if (nome === 'downloads') return {
+        save: async function (o) {
+          var blob = new Blob([o.data], { type: 'text/html;charset=utf-8' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob); a.download = o.filename || 'arquivo.html';
+          document.body.appendChild(a); a.click();
+          setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        }
+      };
+      throw new Error('recurso desconhecido: ' + nome);
+    }
+  };
+})();
+</script>
+<meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Agenda de Ações DQVS</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Figtree:wght@400;500;600;700&display=swap">
 <style>
 /* Layout: tela de senha; cabeçalho; abas (Ações por fase | Calendário | Arquivo | Contatos); filtros; quadro por fase; calendário Dia/Mês/Ano com temas do mês; ficha da ação com 4 fases editáveis ao mesmo tempo; relatório para impressão */
@@ -579,23 +700,6 @@ button.resp[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset
 
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script>
-/* =====================================================================
-   COLE AQUI A CONFIGURAÇÃO DO SEU FIREBASE
-   Firebase Console > Configurações do projeto (engrenagem) > Geral >
-   "Seus aplicativos" > app Web > "Configuração do SDK" (objeto firebaseConfig)
-   ===================================================================== */
-window.FIREBASE_CONFIG = {
-  apiKey: "COLE_AQUI",
-  authDomain: "COLE_AQUI",
-  projectId: "COLE_AQUI",
-  storageBucket: "COLE_AQUI",
-  messagingSenderId: "COLE_AQUI",
-  appId: "COLE_AQUI"
-};
-</script>
 <script>
 (function () {
   'use strict';
@@ -1816,31 +1920,14 @@ window.FIREBASE_CONFIG = {
   const h0 = location.hash.replace('#', '');
   if (TABS.indexOf(h0) >= 0) tab = h0;
   setGate('carregando');
-  /* Download do relatório (arquivo .html) pelo navegador */
-  dl = {
-    save: async function (o) {
-      const blob = new Blob([o.data], { type: 'text/html;charset=utf-8' });
-      const url = URL.createObjectURL(blob), a = document.createElement('a');
-      a.href = url; a.download = o.filename; document.body.appendChild(a); a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
-    }
-  };
   (async function () {
-    try {
-      const cfg = window.FIREBASE_CONFIG;
-      if (window.firebase && cfg && cfg.projectId && cfg.projectId !== 'COLE_AQUI') {
-        if (!firebase.apps.length) firebase.initializeApp(cfg);
-        db = firebase.firestore();
-        podeAdmin = true;   /* quem sabe a senha da equipe pode definir/trocar a senha */
-        readOnly = false;
-      } else {
-        console.warn('Firebase não configurado: preencha window.FIREBASE_CONFIG no início do arquivo.');
-      }
-    } catch (e) { console.error('Erro ao iniciar o Firebase', e); db = null; }
+    try { if (window.claude && window.claude.use) { db = await window.claude.use('db'); user = await window.claude.use('user'); dl = await window.claude.use('downloads'); } } catch (e) { db = db || null; }
+    if (db) {
+      try { if (user && user.can) { const ok = await Promise.resolve(user.can('data.write')); if (ok === false) readOnly = true; } } catch (e) {}
+      try { podeAdmin = user ? await user.canEdit() : false; } catch (e) { podeAdmin = false; }
+    }
     carregarAcesso();
   })();
 })();
 </script>
-
-
 </body></html>
